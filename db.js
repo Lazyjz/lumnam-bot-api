@@ -45,7 +45,7 @@ const db = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0,
   // ⚠️ เพิ่มบรรทัดนี้: ช่วยแก้ปัญหาเวลาต่อ Database ข้าม Server แล้วเจอ error เรื่อง Handshake
-  ssl: { rejectUnauthorized: false } 
+  //ssl: { rejectUnauthorized: false } 
 });
 
 // ✅ ทดสอบการเชื่อมต่อ (Log จะไปขึ้นใน Render Dashboard)
