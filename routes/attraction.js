@@ -1865,34 +1865,74 @@ if (intentName === 'RouteDetail') {
 
 
       // ====== Intent: ขอเทศกาล “ตามพื้นที่/ช่วงเวลา” ======
-  if (intentName === 'ListFestivals') {
+// ====== Intent: ขอเทศกาล “ตามพื้นที่/ช่วงเวลา” ======
+if (intentName === 'ListFestivals') {
   const getOne = v => Array.isArray(v) ? v[0] : v;
 
   const province = (getOne(params.Province) || getOne(params.province) || '').trim();
   const district = (getOne(params.District) || getOne(params.district) || '').trim();
   const theDate  = (getOne(params.date) || getOne(params.Date) || '').trim();
 
-  //รับชื่อเดือนจากพารามิเตอร์หรือเดาจากข้อความ
-  let monthRaw = '';
+  // ตัวแปรสำหรับเก็บเดือนและปีที่ต้องการค้นหา
   let monthNum = null;
+  // ค่าเริ่มต้นปีปัจจุบัน (ต้องปรับเวลาให้เป็นไทยก่อน เพื่อกันเรื่องข้ามปีผิด)
+  const nowThai = new Date();
+  nowThai.setHours(nowThai.getHours() + 7); 
+  let yearNum = nowThai.getFullYear();
+  let monthRaw = '';
 
-  // ถ้ามีค่า Month จาก Dialogflow (จะเป็น object มี startDate/endDate)
-  if (params.Month && typeof params.Month === 'object') {
+  const q = String(queryText || '');
+
+  // ✅ 1. ดักจับคำว่า เดือนนี้/เดือนหน้า/เดือนที่แล้ว (คำนวณจากเวลาไทยปัจจุบัน)
+  if (q.includes('เดือนนี้')) {
+    monthNum = nowThai.getMonth() + 1;
+    yearNum = nowThai.getFullYear();
+    monthRaw = 'เดือนนี้';
+  } 
+  else if (q.includes('เดือนหน้า')) {
+    // บวกเดือนเพิ่ม 1 (ถ้าเป็น ธ.ค. จะข้ามปีให้อัตโนมัติ)
+    nowThai.setMonth(nowThai.getMonth() + 1);
+    monthNum = nowThai.getMonth() + 1;
+    yearNum = nowThai.getFullYear();
+    monthRaw = 'เดือนหน้า';
+  }
+  else if (q.includes('เดือนที่แล้ว') || q.includes('เดือนก่อน')) {
+    nowThai.setMonth(nowThai.getMonth() - 1);
+    monthNum = nowThai.getMonth() + 1;
+    yearNum = nowThai.getFullYear();
+    monthRaw = 'เดือนที่แล้ว';
+  }
+  // ✅ 2. ถ้ามาจาก Parameter ของ Dialogflow (แก้ Bug Timezone ตรงนี้)
+  else if (params.Month && typeof params.Month === 'object') {
     try {
-      const startDate = new Date(params.Month.startDate);
-      monthNum = startDate.getMonth() + 1; // เดือน 0–11 → +1
-      monthRaw = startDate.toLocaleString('th-TH', { month: 'long' });
+      const dateStr = params.Month.startDate; // เช่น "2025-11-01T00:00:00+07:00"
+      
+      // ⚠️ วิธีแก้: ตัดเอาเลขปีและเดือนออกมาตรงๆ ไม่ผ่าน new Date() เพื่อกันเวลาเพี้ยน
+      // รูปแบบ String คือ "YYYY-MM-DD..." 
+      // index 0-4 คือปี, index 5-7 คือเดือน
+      yearNum = parseInt(dateStr.substring(0, 4));
+      monthNum = parseInt(dateStr.substring(5, 7));
+      
+      // หาชื่อเดือนภาษาไทยใส่ตัวแปร monthRaw (เผื่อใช้แสดงผล)
+      const thMonths = ['','มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
+      monthRaw = thMonths[monthNum] || '';
+      
     } catch (e) {
       console.error('[Month parse error]', e);
     }
   } else {
-    // fallback เผื่อพิมพ์เอง เช่น "เดือนตุลาคม"
+    // fallback กรณีพิมพ์มาแค่ชื่อเดือน (เช่น "เดือนตุลาคม")
     const raw = (getOne(params.month) || '').trim();
     monthNum = monthNameToNum(raw) || guessMonthFromText(queryText);
     monthRaw = raw;
+    // ถ้าเดาชื่อเดือนได้ ให้ใช้ปีปัจจุบัน (เวลาไทย)
+    yearNum = nowThai.getFullYear();
   }
 
-  // โหมดเริ่มต้น: เทศกาลที่กำลังจะมาถึง
+  // Debug ดูค่าที่ได้ (ดูใน Render Log)
+  console.log(`[ListFestivals] Searching Month: ${monthNum}, Year: ${yearNum} (Query: ${q})`);
+
+  // เริ่มสร้าง SQL
   let sql = `
     SELECT Festival_ID, Festival_Name, Festival_description, Start_date, End_date, Festival_Img
     FROM festival
@@ -1900,38 +1940,26 @@ if (intentName === 'RouteDetail') {
   `;
   const values = [];
 
-  // จังหวัด/อำเภอ (ถ้ามี)
-  // if (province) {
-  //   sql += ` AND EXISTS (
-  //     SELECT 1 FROM province p
-  //     WHERE p.Province_ID = festival.Province_ID
-  //       AND p.Province_Name LIKE CONCAT('%', ?, '%')
-  //   )`;
-  //   values.push(province);
-  // }
-  // if (district) {
-  //   sql += ` AND EXISTS (
-  //     SELECT 1 FROM district d
-  //     WHERE d.District_ID = festival.District_ID
-  //       AND d.District_Name LIKE CONCAT('%', ?, '%')
-  //   )`;
-  //   values.push(district);
-  // }
-
-  // ✅ ถ้ามีวันที่เจาะจง → เลือกเทศกาลที่ “คร่อม” วันนั้น
+  // ✅ 3. ปรับ Logic SQL ให้รองรับเดือนและปีที่คำนวณมา
   if (theDate) {
+    // กรณีระบุวันที่เป๊ะๆ
     sql += ` AND ? BETWEEN Start_date AND End_date`;
     values.push(theDate);
   } else if (monthNum) {
-    // ✅ ถ้าถามเป็น “เดือน” → เลือกเทศกาลที่ช่วงจัดงานทับซ้อนกับเดือนนั้น (อิงปีปัจจุบัน)
-    // firstDay = YYYY-MM-01, lastDay = LAST_DAY(firstDay)
+    // ✅ แก้ SQL: ใช้ yearNum/monthNum ที่เราคำนวณเอง แทน YEAR(CURDATE())
+    // สูตร: หาวันแรกและวันสุดท้ายของเดือนที่ต้องการค้นหา
+    
+    // สร้าง string วันที่ต้นเดือน 'YYYY-MM-01'
+    const targetDateStr = `${yearNum}-${String(monthNum).padStart(2, '0')}-01`;
+    
+    // Logic: เทศกาลต้อง "เริ่มก่อนสิ้นเดือนนี้" และ "จบหลังต้นเดือนนี้" (คือคาบเกี่ยวกัน)
     sql += `
-      AND Start_date <= LAST_DAY(DATE(CONCAT(YEAR(CURDATE()), '-', LPAD(?,2,'0'), '-01')))
-      AND End_date   >= DATE(CONCAT(YEAR(CURDATE()), '-', LPAD(?,2,'0'), '-01'))
+      AND Start_date <= LAST_DAY(?) 
+      AND End_date >= ?
     `;
-    values.push(monthNum, monthNum);
+    values.push(targetDateStr, targetDateStr);
   } else {
-    // เดิม: ไม่มีทั้งวันและเดือน → แสดงเฉพาะที่ยังไม่จบวันนี้
+    // กรณีไม่ระบุอะไรเลย -> เอาที่ยังไม่จบ (แสดงเทศกาลปัจจุบัน/อนาคต)
     sql += ` AND End_date >= CURDATE()`;
   }
 
@@ -1939,8 +1967,9 @@ if (intentName === 'RouteDetail') {
 
   try {
     const [rows] = await db.query(sql, values);
+    
     if (!rows.length) {
-      const monthLabel = monthRaw || (monthNum ? `เดือนที่ ${monthNum}` : '');
+      const monthLabel = monthRaw || (monthNum ? `เดือนที่ ${monthNum} ปี ${yearNum}` : '');
       return res.json({
         fulfillmentMessages: [
           { text: { text: [
@@ -1972,8 +2001,6 @@ if (intentName === 'RouteDetail') {
     return res.json({ fulfillmentMessages: [{ text: { text: ['เกิดข้อผิดพลาดในการดึงข้อมูลเทศกาล'] } }] });
   }
 }
-
-
 
 
 
